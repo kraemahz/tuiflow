@@ -584,14 +584,15 @@ fn confirm_mode(
                 return;
             };
             record_undo(document, state);
-            if let Some(edge_id) = document.add_edge(source, target) {
+            if document.add_edge(source, target).is_some() {
                 state.mode = GraphEditorMode::Navigate;
-                state.selection = GraphSelection::Edge(edge_id);
-                state.connection_focus_node = Some(source.node_id);
+                state.selection = GraphSelection::Node(source.node_id);
+                state.connection_focus_node = None;
                 set_status(state, StatusKind::Info, "Created edge", effects);
             } else {
                 state.mode = GraphEditorMode::Navigate;
                 state.selection = GraphSelection::Node(source.node_id);
+                state.connection_focus_node = None;
                 set_status(state, StatusKind::Error, "Failed to create edge", effects);
             }
         }
@@ -921,6 +922,23 @@ mod tests {
         let expected = sorted_connection_targets(&document, source).first().copied();
         let _ = apply_action(&mut document, &mut state, EditorAction::BeginConnect);
         assert_eq!(expected.map(GraphSelection::Port), Some(state.selection));
+    }
+
+    #[test]
+    fn confirming_connection_returns_to_source_node_selection() {
+        let mut document = GraphDocument::sample();
+        let mut state = GraphEditorState::new();
+        let source_node = document.nodes[0].id;
+        state.selection = GraphSelection::Node(source_node);
+
+        let _ = apply_action(&mut document, &mut state, EditorAction::BeginConnect);
+        let edge_count = document.edges.len();
+        let _ = apply_action(&mut document, &mut state, EditorAction::ConfirmMode);
+
+        assert_eq!(document.edges.len(), edge_count + 1);
+        assert_eq!(state.selection, GraphSelection::Node(source_node));
+        assert!(matches!(state.mode, GraphEditorMode::Navigate));
+        assert_eq!(state.connection_focus_node, None);
     }
 
     #[test]
