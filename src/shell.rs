@@ -23,16 +23,20 @@ struct PromptState {
     input: String,
 }
 
-pub struct EditorShell {
-    document: GraphDocument,
-    state: GraphEditorState,
+pub struct EditorShell<N, E> {
+    document: GraphDocument<N, E>,
+    state: GraphEditorState<N, E>,
     mapper: ActionMapper,
     theme: GraphTheme,
     prompt: Option<PromptState>,
 }
 
-impl EditorShell {
-    pub fn new(document: GraphDocument) -> Self {
+impl<N, E> EditorShell<N, E>
+where
+    N: Clone + Default,
+    E: Clone + Default,
+{
+    pub fn new(document: GraphDocument<N, E>) -> Self {
         let mut state = GraphEditorState::new();
         if let Some(node) = document.nodes.first() {
             state.selection = crate::editor::Selection::Node(node.id);
@@ -46,11 +50,15 @@ impl EditorShell {
         }
     }
 
-    pub fn document(&self) -> &GraphDocument {
+    pub fn document(&self) -> &GraphDocument<N, E> {
         &self.document
     }
 
-    pub fn state(&self) -> &GraphEditorState {
+    pub fn document_mut(&mut self) -> &mut GraphDocument<N, E> {
+        &mut self.document
+    }
+
+    pub fn state(&self) -> &GraphEditorState<N, E> {
         &self.state
     }
 
@@ -62,21 +70,22 @@ impl EditorShell {
         self.prompt.is_some()
     }
 
-    pub fn handle_event(&mut self, event: &Event) {
+    pub fn handle_event(&mut self, event: &Event) -> Vec<EditorEffect<N, E>> {
         if self.prompt.is_some() {
-            self.handle_prompt_event(event);
-            return;
+            return self.handle_prompt_event(event);
         }
 
         let actions = self.mapper.map_event(event, &self.state);
+        let mut external_effects = Vec::new();
         for action in actions {
-            self.dispatch(action);
+            external_effects.extend(self.dispatch(action));
         }
+        external_effects
     }
 
-    pub fn dispatch(&mut self, action: EditorAction) {
+    pub fn dispatch(&mut self, action: EditorAction) -> Vec<EditorEffect<N, E>> {
         let effects = apply_action(&mut self.document, &mut self.state, action);
-        self.apply_effects(effects);
+        self.apply_effects(effects)
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect) {
@@ -89,33 +98,40 @@ impl EditorShell {
         }
     }
 
-    fn apply_effects(&mut self, effects: Vec<EditorEffect>) {
+    fn apply_effects(&mut self, effects: Vec<EditorEffect<N, E>>) -> Vec<EditorEffect<N, E>> {
+        let mut external = Vec::new();
         for effect in effects {
             match effect {
                 EditorEffect::RequestPrompt(request) => {
                     let input = match &request {
-                        PromptRequest::CreateNode { .. } => String::new(),
+                        PromptRequest::CreateNode { suggested_title } => suggested_title.clone(),
                         PromptRequest::RenameNode { current_title, .. } => current_title.clone(),
                     };
                     self.prompt = Some(PromptState { request, input });
                 }
                 EditorEffect::Status(status) => self.state.status = status,
+                other => external.push(other),
             }
         }
+        external
     }
 
-    fn handle_prompt_event(&mut self, event: &Event) {
+    fn handle_prompt_event(&mut self, event: &Event) -> Vec<EditorEffect<N, E>> {
         let Event::Key(KeyEvent { code, .. }) = event else {
-            return;
+            return Vec::new();
         };
         let Some(prompt) = &mut self.prompt else {
-            return;
+            return Vec::new();
         };
 
         match code {
-            KeyCode::Char(ch) => prompt.input.push(*ch),
+            KeyCode::Char(ch) => {
+                prompt.input.push(*ch);
+                Vec::new()
+            }
             KeyCode::Backspace => {
                 prompt.input.pop();
+                Vec::new()
             }
             KeyCode::Esc => {
                 self.prompt = None;
@@ -123,6 +139,7 @@ impl EditorShell {
                     kind: StatusKind::Info,
                     message: "Prompt cancelled".to_owned(),
                 };
+                Vec::new()
             }
             KeyCode::Enter => {
                 let request = prompt.request.clone();
@@ -137,7 +154,7 @@ impl EditorShell {
                     }
                 }
             }
-            _ => {}
+            _ => Vec::new(),
         }
     }
 }
@@ -177,4 +194,41 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     let [_, middle, _] = vertical.areas(area);
     let [_, center, _] = horizontal.areas(middle);
     center
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{EditorAction, editor::EditorEffect};
+
+    use super::*;
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    struct NodeData {
+        edits: u32,
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    struct EdgeData;
+
+    #[test]
+    fn create_node_prompt_starts_blank() {
+        let mut shell = EditorShell::<NodeData, EdgeData>::new(GraphDocument::new());
+        let effects = shell.dispatch(EditorAction::RequestCreateNode);
+        assert!(effects.is_empty());
+        assert!(shell.prompt_active());
+        let prompt = shell.prompt.as_ref().unwrap();
+        assert!(matches!(prompt.request, PromptRequest::CreateNode { .. }));
+        assert!(prompt.input.is_empty());
+    }
+
+    #[test]
+    fn shell_returns_external_edit_effects() {
+        let mut shell = EditorShell::<NodeData, EdgeData>::new(GraphDocument::sample());
+        let effects = shell.dispatch(EditorAction::ActivateSelection);
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, EditorEffect::OpenNodeEditor { .. }))
+        );
+    }
 }

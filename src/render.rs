@@ -13,16 +13,16 @@ use crate::{
     theme::GraphTheme,
 };
 
-pub struct GraphCanvas<'a> {
-    document: &'a GraphDocument,
-    state: &'a GraphEditorState,
+pub struct GraphCanvas<'a, N, E> {
+    document: &'a GraphDocument<N, E>,
+    state: &'a GraphEditorState<N, E>,
     theme: &'a GraphTheme,
 }
 
-impl<'a> GraphCanvas<'a> {
+impl<'a, N, E> GraphCanvas<'a, N, E> {
     pub fn new(
-        document: &'a GraphDocument,
-        state: &'a GraphEditorState,
+        document: &'a GraphDocument<N, E>,
+        state: &'a GraphEditorState<N, E>,
         theme: &'a GraphTheme,
     ) -> Self {
         Self {
@@ -33,7 +33,11 @@ impl<'a> GraphCanvas<'a> {
     }
 }
 
-impl Widget for GraphCanvas<'_> {
+impl<N, E> Widget for GraphCanvas<'_, N, E>
+where
+    N: Clone,
+    E: Clone,
+{
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.width < 3 || area.height < 3 {
             return;
@@ -125,7 +129,7 @@ impl Widget for GraphCanvas<'_> {
     }
 }
 
-fn preview_targets(document: &GraphDocument, source: PortRef) -> Vec<PortRef> {
+fn preview_targets<N, E>(document: &GraphDocument<N, E>, source: PortRef) -> Vec<PortRef> {
     sorted_connection_targets(document, source)
 }
 
@@ -351,7 +355,11 @@ mod tests {
 
     use super::*;
 
-    fn render_string(document: &GraphDocument, state: &GraphEditorState, area: Rect) -> String {
+    fn render_string(
+        document: &GraphDocument<(), ()>,
+        state: &GraphEditorState<(), ()>,
+        area: Rect,
+    ) -> String {
         let backend = TestBackend::new(area.width, area.height);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
@@ -379,7 +387,7 @@ mod tests {
 
     #[test]
     fn renders_selected_node_snapshot() {
-        let document = GraphDocument::sample();
+        let document = GraphDocument::<(), ()>::sample();
         let mut state = GraphEditorState::new();
         state.selection = Selection::Node(document.nodes[0].id);
         assert_snapshot!(render_string(&document, &state, Rect::new(0, 0, 80, 24)));
@@ -387,7 +395,7 @@ mod tests {
 
     #[test]
     fn renders_clipped_subrect_snapshot() {
-        let document = GraphDocument::sample();
+        let document = GraphDocument::<(), ()>::sample();
         let state = GraphEditorState::new();
         assert_snapshot!(render_string(&document, &state, Rect::new(0, 0, 36, 14)));
     }

@@ -10,7 +10,11 @@ impl ActionMapper {
         Self
     }
 
-    pub fn map_event(&self, event: &Event, state: &GraphEditorState) -> Vec<EditorAction> {
+    pub fn map_event<N, E>(
+        &self,
+        event: &Event,
+        state: &GraphEditorState<N, E>,
+    ) -> Vec<EditorAction> {
         match event {
             Event::Key(key) => self.map_key(*key, state),
             Event::Mouse(mouse) => self.map_mouse(*mouse),
@@ -18,7 +22,7 @@ impl ActionMapper {
         }
     }
 
-    fn map_key(&self, key: KeyEvent, state: &GraphEditorState) -> Vec<EditorAction> {
+    fn map_key<N, E>(&self, key: KeyEvent, state: &GraphEditorState<N, E>) -> Vec<EditorAction> {
         if key.modifiers.contains(KeyModifiers::SHIFT) {
             return match key.code {
                 KeyCode::Left => vec![EditorAction::PanViewport { dx: -2, dy: 0 }],
@@ -57,6 +61,7 @@ fn map_navigate_mode(key: KeyEvent) -> Vec<EditorAction> {
             vec![EditorAction::MoveSelection(FocusDirection::Down)]
         }
         KeyCode::Tab | KeyCode::BackTab => vec![EditorAction::ToggleConnectionSelection],
+        KeyCode::Enter => vec![EditorAction::ActivateSelection],
         KeyCode::Char('n') => vec![EditorAction::RequestCreateNode],
         KeyCode::Char('r') => vec![EditorAction::RequestRenameNode],
         KeyCode::Char('m') => vec![EditorAction::BeginMoveNode],
@@ -116,7 +121,7 @@ mod tests {
     #[test]
     fn mapper_returns_expected_navigate_action() {
         let mapper = ActionMapper::new();
-        let state = GraphEditorState::new();
+        let state = GraphEditorState::<(), ()>::new();
         let actions = mapper.map_event(
             &Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
             &state,
@@ -127,7 +132,7 @@ mod tests {
     #[test]
     fn mapper_tracks_mouse_without_editing() {
         let mapper = ActionMapper::new();
-        let state = GraphEditorState::new();
+        let state = GraphEditorState::<(), ()>::new();
         let actions = mapper.map_event(
             &Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
@@ -142,5 +147,16 @@ mod tests {
             vec![EditorAction::MouseEventObserved { column: 5, row: 7 }]
         );
         let _ = KeyEventKind::Press;
+    }
+
+    #[test]
+    fn mapper_uses_enter_to_activate_selection() {
+        let mapper = ActionMapper::new();
+        let state = GraphEditorState::<(), ()>::new();
+        let actions = mapper.map_event(
+            &Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &state,
+        );
+        assert_eq!(actions, vec![EditorAction::ActivateSelection]);
     }
 }

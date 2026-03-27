@@ -75,7 +75,7 @@ pub struct CanvasLayout {
 }
 
 impl CanvasLayout {
-    pub fn for_document(document: &GraphDocument) -> Self {
+    pub fn for_document<N, E>(document: &GraphDocument<N, E>) -> Self {
         let nodes: Vec<_> = document
             .nodes
             .iter()
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn node_sizing_uses_title_and_port_labels() {
-        let doc = GraphDocument::sample();
+        let doc = GraphDocument::<(), ()>::sample();
         let layout = CanvasLayout::for_document(&doc);
         let parse = layout
             .nodes
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn router_avoids_node_bounds() {
-        let doc = GraphDocument::sample();
+        let doc = GraphDocument::<(), ()>::sample();
         let layout = CanvasLayout::for_document(&doc);
         let edge = &layout.edges[0];
         for point in &edge.points {

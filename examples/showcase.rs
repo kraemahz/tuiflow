@@ -8,28 +8,43 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
-use tui_dnd::{EditorShell, GraphDocument, Selection};
+use tui_dnd::{EditorEffect, EditorShell, GraphDocument, Selection};
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ShowcaseNodeData {
+    edit_count: u32,
+    note: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct ShowcaseEdgeData {
+    edit_count: u32,
+    label: String,
+}
 
 struct ShowcaseApp {
-    editor: EditorShell,
+    editor: EditorShell<ShowcaseNodeData, ShowcaseEdgeData>,
+    last_external_action: String,
 }
 
 impl ShowcaseApp {
     fn new() -> Self {
         Self {
             editor: EditorShell::new(GraphDocument::sample()),
+            last_external_action: "Press Enter on a node or edge to edit payload data".to_owned(),
         }
     }
 
-    fn editor_mut(&mut self) -> &mut EditorShell {
-        &mut self.editor
+    fn handle_event(&mut self, event: &Event) {
+        let effects = self.editor.handle_event(event);
+        self.apply_external_effects(effects);
     }
 
     fn render(&self, frame: &mut Frame, area: Rect) {
         let [body, status] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
         let [sidebar, canvas] =
-            Layout::horizontal([Constraint::Length(30), Constraint::Fill(1)]).areas(body);
+            Layout::horizontal([Constraint::Length(32), Constraint::Fill(1)]).areas(body);
 
         frame.render_widget(
             Paragraph::new(self.sidebar_lines())
@@ -45,13 +60,55 @@ impl ShowcaseApp {
         frame.render_widget(Paragraph::new(self.status_line()), status);
     }
 
+    fn apply_external_effects(
+        &mut self,
+        effects: Vec<EditorEffect<ShowcaseNodeData, ShowcaseEdgeData>>,
+    ) {
+        for effect in effects {
+            match effect {
+                EditorEffect::OpenNodeEditor {
+                    node_id,
+                    title,
+                    mut data,
+                } => {
+                    data.edit_count += 1;
+                    if data.note.is_empty() {
+                        data.note = format!("{} opened", title);
+                    }
+                    let _ = self
+                        .editor
+                        .document_mut()
+                        .set_node_data(node_id, data.clone());
+                    self.last_external_action =
+                        format!("Updated node payload for {} ({})", title, data.edit_count);
+                }
+                EditorEffect::OpenEdgeEditor { edge_id, mut data } => {
+                    data.edit_count += 1;
+                    if data.label.is_empty() {
+                        data.label = format!("Edge {}", edge_id.0);
+                    }
+                    let _ = self
+                        .editor
+                        .document_mut()
+                        .set_edge_data(edge_id, data.clone());
+                    self.last_external_action = format!(
+                        "Updated edge payload for {} ({})",
+                        edge_id.0, data.edit_count
+                    );
+                }
+                EditorEffect::RequestPrompt(_) | EditorEffect::Status(_) => {}
+            }
+        }
+    }
+
     fn sidebar_lines(&self) -> Vec<Line<'static>> {
         let mut lines = vec![
             Line::from("Showcase"),
             Line::from(""),
             Line::from("Keys"),
-            Line::from("arrows move nodes"),
+            Line::from("arrows switch nodes"),
             Line::from("tab toggle connections"),
+            Line::from("enter edit payload"),
             Line::from("n create  r rename"),
             Line::from("m move    c connect"),
             Line::from("d delete  u undo"),
@@ -63,27 +120,39 @@ impl ShowcaseApp {
         ];
 
         let selection = self.editor.state().selection;
-        let detail = match selection {
-            Selection::None => "None".to_owned(),
-            Selection::Node(node_id) => self
-                .editor
-                .document()
-                .node(node_id)
-                .map(|node| format!("Node: {}", node.title))
-                .unwrap_or_else(|| "Node".to_owned()),
-            Selection::Port(port) => self
-                .editor
-                .document()
-                .find_port(port)
-                .map(|port_def| format!("{:?}: {}", port.direction, port_def.label))
-                .unwrap_or_else(|| "Port".to_owned()),
-            Selection::Edge(edge_id) => format!("Edge: {}", edge_id.0),
-        };
-        lines.push(Line::from(detail));
+        match selection {
+            Selection::None => lines.push(Line::from("None")),
+            Selection::Node(node_id) => {
+                if let Some(node) = self.editor.document().node(node_id) {
+                    lines.push(Line::from(format!("Node: {}", node.title)));
+                    lines.push(Line::from(format!("node edits: {}", node.data.edit_count)));
+                    lines.push(Line::from(format!("note: {}", node.data.note)));
+                }
+            }
+            Selection::Port(port) => {
+                if let Some(port_def) = self.editor.document().find_port(port) {
+                    lines.push(Line::from(format!(
+                        "{:?}: {}",
+                        port.direction, port_def.label
+                    )));
+                }
+            }
+            Selection::Edge(edge_id) => {
+                if let Some(edge) = self.editor.document().edge(edge_id) {
+                    lines.push(Line::from(format!("Edge: {}", edge_id.0)));
+                    lines.push(Line::from(format!("edge edits: {}", edge.data.edit_count)));
+                    lines.push(Line::from(format!("label: {}", edge.data.label)));
+                }
+            }
+        }
+
         lines.push(Line::from(format!(
             "Undo depth: {}",
             self.editor.state().undo_depth()
         )));
+        lines.push(Line::from(""));
+        lines.push(Line::from("Last host action"));
+        lines.push(Line::from(self.last_external_action.clone()));
         lines
     }
 
@@ -96,6 +165,8 @@ impl ShowcaseApp {
             Span::raw(mode),
             Span::raw(" | "),
             Span::raw(status.clone()),
+            Span::raw(" | "),
+            Span::raw(self.last_external_action.clone()),
             Span::raw(" | q quit"),
         ])
     }
@@ -124,7 +195,7 @@ fn run(terminal: &mut DefaultTerminal) -> io::Result<()> {
         ) {
             break;
         }
-        app.editor_mut().handle_event(&event);
+        app.handle_event(&event);
     }
     Ok(())
 }
