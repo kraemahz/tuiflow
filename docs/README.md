@@ -1,4 +1,4 @@
-# tui_dnd Docs
+# tuiflow Docs
 
 This directory is the design workspace for the repository.
 

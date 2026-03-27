@@ -8,7 +8,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
-use tui_dnd::{EditorEffect, EditorShell, GraphDocument, Selection};
+use tuiflow::{EditorEffect, EditorShell, GraphDocument, Selection};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct ShowcaseNodeData {
