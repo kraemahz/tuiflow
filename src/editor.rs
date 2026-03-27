@@ -69,6 +69,8 @@ pub enum GraphEditorMode {
     Navigate,
     MoveNode {
         node_id: NodeId,
+        original_position: Point,
+        current_position: Point,
     },
     ConnectEdge {
         source: PortRef,
@@ -173,10 +175,7 @@ pub fn apply_action(
             submit_rename(document, state, title, &mut effects);
         }
         EditorAction::BeginMoveNode => begin_move_node(document, state, &mut effects),
-        EditorAction::MoveSelectedNode { dx, dy } => {
-            record_undo(document, state);
-            move_selected_node(document, state, dx, dy, &mut effects);
-        }
+        EditorAction::MoveSelectedNode { dx, dy } => move_selected_node(state, dx, dy, &mut effects),
         EditorAction::BeginConnect => begin_connect(document, state, &mut effects),
         EditorAction::CycleConnectionTarget(direction) => {
             cycle_connection_target(document, state, direction, &mut effects);
@@ -196,12 +195,18 @@ pub fn apply_action(
 }
 
 fn record_undo(document: &GraphDocument, state: &mut GraphEditorState) {
+    let (selection, mode, connection_focus_node) = match state.mode {
+        GraphEditorMode::MoveNode { node_id, .. } => {
+            (GraphSelection::Node(node_id), GraphEditorMode::Navigate, None)
+        }
+        _ => (state.selection, state.mode, state.connection_focus_node),
+    };
     state.change_log.push(UndoEntry {
         document: document.clone(),
-        selection: state.selection,
-        mode: state.mode,
+        selection,
+        mode,
         viewport: state.viewport,
-        connection_focus_node: state.connection_focus_node,
+        connection_focus_node,
     });
     if state.change_log.len() > UNDO_LIMIT {
         state.change_log.remove(0);
@@ -438,26 +443,40 @@ fn begin_move_node(
         );
         return;
     }
-    state.mode = GraphEditorMode::MoveNode { node_id };
+    let original_position = document.node(node_id).unwrap().position;
+    state.mode = GraphEditorMode::MoveNode {
+        node_id,
+        original_position,
+        current_position: original_position,
+    };
     state.connection_focus_node = None;
     state.selection = GraphSelection::Node(node_id);
     set_status(state, StatusKind::Info, "Move mode", effects);
 }
 
 fn move_selected_node(
-    document: &mut GraphDocument,
     state: &mut GraphEditorState,
     dx: i32,
     dy: i32,
     effects: &mut Vec<EditorEffect>,
 ) {
-    let GraphEditorMode::MoveNode { node_id } = state.mode else {
+    let GraphEditorMode::MoveNode {
+        node_id,
+        original_position,
+        mut current_position,
+    } = state.mode
+    else {
         return;
     };
-    if document.move_node_by(node_id, dx, dy) {
-        state.selection = GraphSelection::Node(node_id);
-        set_status(state, StatusKind::Info, "Moved node", effects);
-    }
+    current_position.x += dx;
+    current_position.y += dy;
+    state.mode = GraphEditorMode::MoveNode {
+        node_id,
+        original_position,
+        current_position,
+    };
+    state.selection = GraphSelection::Node(node_id);
+    set_status(state, StatusKind::Info, "Previewing move", effects);
 }
 
 fn begin_connect(
@@ -536,9 +555,16 @@ fn confirm_mode(
 ) {
     match state.mode {
         GraphEditorMode::Navigate => {}
-        GraphEditorMode::MoveNode { node_id } => {
+        GraphEditorMode::MoveNode {
+            node_id,
+            current_position,
+            ..
+        } => {
+            record_undo(document, state);
+            let _ = document.set_node_position(node_id, current_position);
             state.mode = GraphEditorMode::Navigate;
             state.selection = GraphSelection::Node(node_id);
+            state.connection_focus_node = None;
             set_status(state, StatusKind::Info, "Move confirmed", effects);
         }
         GraphEditorMode::ConnectEdge {
@@ -575,7 +601,7 @@ fn confirm_mode(
 fn cancel_mode(state: &mut GraphEditorState, effects: &mut Vec<EditorEffect>) {
     match state.mode {
         GraphEditorMode::Navigate => {}
-        GraphEditorMode::MoveNode { node_id } => {
+        GraphEditorMode::MoveNode { node_id, .. } => {
             state.mode = GraphEditorMode::Navigate;
             state.selection = GraphSelection::Node(node_id);
             set_status(state, StatusKind::Info, "Move cancelled", effects);
@@ -884,9 +910,14 @@ mod tests {
             &mut state,
             EditorAction::MoveSelectedNode { dx: 3, dy: -1 },
         );
-        let after = document.node(node_id).unwrap().position;
-        assert_eq!(after.x, before.x + 3);
-        assert_eq!(after.y, before.y - 1);
+        assert_eq!(document.node(node_id).unwrap().position, before);
+        match state.mode {
+            GraphEditorMode::MoveNode { current_position, .. } => {
+                assert_eq!(current_position.x, before.x + 3);
+                assert_eq!(current_position.y, before.y - 1);
+            }
+            _ => panic!("expected move preview mode"),
+        }
     }
 
     #[test]
@@ -922,8 +953,28 @@ mod tests {
             &mut state,
             EditorAction::MoveSelectedNode { dx: 5, dy: 0 },
         );
+        let _ = apply_action(&mut document, &mut state, EditorAction::ConfirmMode);
         let _ = apply_action(&mut document, &mut state, EditorAction::Undo);
         assert_eq!(document.node(node_id).unwrap().position, original);
+    }
+
+    #[test]
+    fn cancel_move_restores_original_location() {
+        let mut document = GraphDocument::sample();
+        let mut state = GraphEditorState::new();
+        let node_id = document.nodes[0].id;
+        let original = document.node(node_id).unwrap().position;
+        state.selection = GraphSelection::Node(node_id);
+        let _ = apply_action(&mut document, &mut state, EditorAction::BeginMoveNode);
+        let _ = apply_action(
+            &mut document,
+            &mut state,
+            EditorAction::MoveSelectedNode { dx: 7, dy: 2 },
+        );
+        let _ = apply_action(&mut document, &mut state, EditorAction::CancelMode);
+        assert_eq!(document.node(node_id).unwrap().position, original);
+        assert_eq!(state.selection, GraphSelection::Node(node_id));
+        assert!(matches!(state.mode, GraphEditorMode::Navigate));
     }
 
     #[test]

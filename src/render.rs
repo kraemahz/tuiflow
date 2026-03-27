@@ -39,7 +39,16 @@ impl Widget for GraphCanvas<'_> {
             return;
         }
 
-        let layout = CanvasLayout::for_document(self.document);
+        let mut preview_document = self.document.clone();
+        if let GraphEditorMode::MoveNode {
+            node_id,
+            current_position,
+            ..
+        } = self.state.mode
+        {
+            let _ = preview_document.set_node_position(node_id, current_position);
+        }
+        let layout = CanvasLayout::for_document(&preview_document);
         Block::default()
             .borders(Borders::ALL)
             .border_style(self.theme.border)
@@ -66,7 +75,7 @@ impl Widget for GraphCanvas<'_> {
             candidate_index,
         } = self.state.mode
         {
-            let targets = preview_targets(self.document, source);
+            let targets = preview_targets(&preview_document, source);
             if let Some(target) = targets.get(candidate_index).copied() {
                 let preview = layout::route_edge(
                     layout.port_anchor(source).unwrap_or(Point::new(0, 0)),

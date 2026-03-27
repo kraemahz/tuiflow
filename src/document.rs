@@ -175,6 +175,14 @@ impl GraphDocument {
         true
     }
 
+    pub fn set_node_position(&mut self, node_id: NodeId, position: Point) -> bool {
+        let Some(node) = self.node_mut(node_id) else {
+            return false;
+        };
+        node.position = position;
+        true
+    }
+
     pub fn node(&self, node_id: NodeId) -> Option<&GraphNode> {
         self.nodes.iter().find(|node| node.id == node_id)
     }
