@@ -1,24 +1,24 @@
 ---
-source: src/showcase.rs
-assertion_line: 130
+source: examples/showcase.rs
+assertion_line: 160
 expression: "lines.join(\"\\n\")"
 ---
 ┌Inspector───────────────────┐┌Graph───────────────────────────────────────────────────────────────┐
-│Hybrid showcase             ││┌──────────────────────────────────────────────────────────────────┐│
+│Showcase                    ││┌──────────────────────────────────────────────────────────────────┐│
 │                            │││                                                                  ││
 │Keys                        │││                                                          ┌──Review
-│n create  r rename          │││    ┌────Input─────┐          ┌──Parse Records──┐        ▲◀Rejects││
-│m move    c connect         │││    ◀File       Raw│▶────────▶◀Raw          Rows│▶       ││       ││
-│d delete  g center          │││    │          Meta│▶────────┐│          Rejects│▶───────┘└────────┘
-│tab cycle                   │││    │              │         ││                 ││         ┌───────│
-│shift+arrows pan            │││    └──────────────┘         │└─────────────────┘│         │      ││
-│enter/esc confirm/cancel    │││                             ┌───────────────────┘         │      ││
+│arrows move nodes           │││    ┌────Input─────┐          ┌──Parse Records──┐        ▲◀Rejects││
+│tab toggle connections      │││    ◀File       Raw│▶────────▶◀Raw          Rows│▶       ││       ││
+│n create  r rename          │││    │          Meta│▶────────┐│          Rejects│▶───────┘└────────┘
+│m move    c connect         │││    │              │         ││                 ││         ┌───────│
+│d delete  u undo            │││    └──────────────┘         │└─────────────────┘│         │      ││
+│g center                    │││                             ┌───────────────────┘         │      ││
+│shift+arrows pan            │││                             │                             │      ││
+│enter/esc confirm/cancel    │││                             │                             │      ││
 │                            │││                             │                             │      ││
 │Selected                    │││                             │                             │      ││
-│Node: Input                 │││                             │                             │      ││
-│                            │││                             │                             │      ││
-│                            │││                             │                             │┌──────E
-│                            │││                             │┌────Enrich────┐             ▲◀Ready││
+│Node: Input                 │││                             │                             │┌──────E
+│Undo depth: 0               │││                             │┌────Enrich────┐             ▲◀Ready││
 │                            │││                             ▼◀Rows     Ready│▶────────────┘◀Approve
 │                            │││                             ▼◀Meta          │              │     ││
 │                            │││                              │              │              └──────┘

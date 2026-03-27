@@ -1,6 +1,8 @@
 use crate::document::{EdgeId, GraphDocument, NodeId, Point, PortDirection, PortRef};
 use crate::layout::CanvasLayout;
 
+const UNDO_LIMIT: usize = 128;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FocusDirection {
     Left,
@@ -75,12 +77,23 @@ pub enum GraphEditorMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct UndoEntry {
+    document: GraphDocument,
+    selection: GraphSelection,
+    mode: GraphEditorMode,
+    viewport: Point,
+    connection_focus_node: Option<NodeId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GraphEditorState {
     pub mode: GraphEditorMode,
     pub selection: GraphSelection,
     pub viewport: Point,
     pub status: StatusMessage,
     pub mouse: MouseState,
+    pub connection_focus_node: Option<NodeId>,
+    change_log: Vec<UndoEntry>,
 }
 
 impl Default for GraphEditorState {
@@ -91,6 +104,8 @@ impl Default for GraphEditorState {
             viewport: Point::new(0, 0),
             status: StatusMessage::default(),
             mouse: MouseState::default(),
+            connection_focus_node: None,
+            change_log: Vec::new(),
         }
     }
 }
@@ -99,11 +114,16 @@ impl GraphEditorState {
     pub fn new() -> Self {
         Self::default()
     }
+
+    pub fn undo_depth(&self) -> usize {
+        self.change_log.len()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditorAction {
     MoveSelection(FocusDirection),
+    ToggleConnectionSelection,
     PanViewport { dx: i32, dy: i32 },
     CenterViewport,
     RequestCreateNode,
@@ -117,6 +137,7 @@ pub enum EditorAction {
     ConfirmMode,
     CancelMode,
     DeleteSelection,
+    Undo,
     MouseEventObserved { column: u16, row: u16 },
 }
 
@@ -128,6 +149,9 @@ pub fn apply_action(
     let mut effects = Vec::new();
     match action {
         EditorAction::MoveSelection(direction) => move_selection(document, state, direction),
+        EditorAction::ToggleConnectionSelection => {
+            toggle_connection_selection(document, state, &mut effects)
+        }
         EditorAction::PanViewport { dx, dy } => {
             state.viewport.x += dx;
             state.viewport.y += dy;
@@ -140,14 +164,17 @@ pub fn apply_action(
             }))
         }
         EditorAction::SubmitCreateNodeTitle(title) => {
+            record_undo(document, state);
             submit_create_node(document, state, title, &mut effects);
         }
         EditorAction::RequestRenameNode => request_rename(document, state, &mut effects),
         EditorAction::SubmitRenameNodeTitle(title) => {
+            record_undo(document, state);
             submit_rename(document, state, title, &mut effects);
         }
         EditorAction::BeginMoveNode => begin_move_node(document, state, &mut effects),
         EditorAction::MoveSelectedNode { dx, dy } => {
+            record_undo(document, state);
             move_selected_node(document, state, dx, dy, &mut effects);
         }
         EditorAction::BeginConnect => begin_connect(document, state, &mut effects),
@@ -156,12 +183,46 @@ pub fn apply_action(
         }
         EditorAction::ConfirmMode => confirm_mode(document, state, &mut effects),
         EditorAction::CancelMode => cancel_mode(state, &mut effects),
-        EditorAction::DeleteSelection => delete_selection(document, state, &mut effects),
+        EditorAction::DeleteSelection => {
+            record_undo(document, state);
+            delete_selection(document, state, &mut effects);
+        }
+        EditorAction::Undo => undo(document, state, &mut effects),
         EditorAction::MouseEventObserved { column, row } => {
             state.mouse.last_position = Some((column, row));
         }
     }
     effects
+}
+
+fn record_undo(document: &GraphDocument, state: &mut GraphEditorState) {
+    state.change_log.push(UndoEntry {
+        document: document.clone(),
+        selection: state.selection,
+        mode: state.mode,
+        viewport: state.viewport,
+        connection_focus_node: state.connection_focus_node,
+    });
+    if state.change_log.len() > UNDO_LIMIT {
+        state.change_log.remove(0);
+    }
+}
+
+fn undo(
+    document: &mut GraphDocument,
+    state: &mut GraphEditorState,
+    effects: &mut Vec<EditorEffect>,
+) {
+    let Some(entry) = state.change_log.pop() else {
+        set_status(state, StatusKind::Error, "Nothing to undo", effects);
+        return;
+    };
+    *document = entry.document;
+    state.selection = entry.selection;
+    state.mode = entry.mode;
+    state.viewport = entry.viewport;
+    state.connection_focus_node = entry.connection_focus_node;
+    set_status(state, StatusKind::Info, "Undid last change", effects);
 }
 
 fn move_selection(
@@ -172,40 +233,101 @@ fn move_selection(
     if !matches!(state.mode, GraphEditorMode::Navigate) {
         return;
     }
+
+    if let Some(node_id) = state.connection_focus_node {
+        cycle_selected_connection(document, state, node_id, direction);
+        return;
+    }
+
     let layout = CanvasLayout::for_document(document);
-    let selectables = selectable_items(&layout);
-    if selectables.is_empty() {
+    let nodes: Vec<_> = layout
+        .nodes
+        .iter()
+        .map(|node| SelectableNode {
+            node_id: node.node_id,
+            point: node.rect.center(),
+        })
+        .collect();
+    if nodes.is_empty() {
         state.selection = GraphSelection::None;
         return;
     }
-    let current = state.selection;
-    let current_index = selectables
+
+    let current_node = selected_node_id(state.selection).unwrap_or(nodes[0].node_id);
+    let current = nodes
         .iter()
-        .position(|item| item.selection == current);
+        .find(|item| item.node_id == current_node)
+        .copied()
+        .unwrap_or(nodes[0]);
+
     let next = match direction {
         FocusDirection::Next => {
-            let idx = current_index
-                .map(|idx| (idx + 1) % selectables.len())
+            let idx = nodes
+                .iter()
+                .position(|item| item.node_id == current.node_id)
                 .unwrap_or(0);
-            selectables[idx].selection
+            nodes[(idx + 1) % nodes.len()].node_id
         }
         FocusDirection::Previous => {
-            let idx = current_index
-                .map(|idx| idx.checked_sub(1).unwrap_or(selectables.len() - 1))
+            let idx = nodes
+                .iter()
+                .position(|item| item.node_id == current.node_id)
                 .unwrap_or(0);
-            selectables[idx].selection
+            nodes[idx.checked_sub(1).unwrap_or(nodes.len() - 1)].node_id
         }
-        _ => directional_selection(current, direction, &selectables).unwrap_or_else(|| {
-            current_index
-                .map(|idx| selectables[idx].selection)
-                .unwrap_or(selectables[0].selection)
-        }),
+        _ => directional_node_selection(current, direction, &nodes).unwrap_or(current.node_id),
     };
-    state.selection = next;
+
+    state.selection = GraphSelection::Node(next);
     state.status = StatusMessage {
         kind: StatusKind::Info,
-        message: format!("Selected {}", describe_selection(document, next)),
+        message: format!("Selected {}", describe_selection(document, state.selection)),
     };
+}
+
+fn toggle_connection_selection(
+    document: &GraphDocument,
+    state: &mut GraphEditorState,
+    effects: &mut Vec<EditorEffect>,
+) {
+    if !matches!(state.mode, GraphEditorMode::Navigate) {
+        return;
+    }
+
+    if let Some(node_id) = state.connection_focus_node {
+        state.connection_focus_node = None;
+        state.selection = GraphSelection::Node(node_id);
+        set_status(
+            state,
+            StatusKind::Info,
+            "Returned to node selection",
+            effects,
+        );
+        return;
+    }
+
+    let Some(node_id) = selected_node_id(state.selection) else {
+        set_status(state, StatusKind::Error, "Select a node first", effects);
+        return;
+    };
+    let edges = connected_edges(document, node_id);
+    let Some(edge_id) = edges.first().copied() else {
+        set_status(
+            state,
+            StatusKind::Error,
+            "Selected node has no connections",
+            effects,
+        );
+        return;
+    };
+    state.connection_focus_node = Some(node_id);
+    state.selection = GraphSelection::Edge(edge_id);
+    set_status(
+        state,
+        StatusKind::Info,
+        "Connection selection mode",
+        effects,
+    );
 }
 
 fn center_viewport(
@@ -248,6 +370,7 @@ fn submit_create_node(
     );
     state.selection = GraphSelection::Node(node_id);
     state.mode = GraphEditorMode::Navigate;
+    state.connection_focus_node = None;
     set_status(state, StatusKind::Info, "Created node", effects);
 }
 
@@ -316,6 +439,8 @@ fn begin_move_node(
         return;
     }
     state.mode = GraphEditorMode::MoveNode { node_id };
+    state.connection_focus_node = None;
+    state.selection = GraphSelection::Node(node_id);
     set_status(state, StatusKind::Info, "Move mode", effects);
 }
 
@@ -344,7 +469,7 @@ fn begin_connect(
         set_status(
             state,
             StatusKind::Error,
-            "Select an output port or node with outputs",
+            "Select a node with outputs",
             effects,
         );
         return;
@@ -363,6 +488,7 @@ fn begin_connect(
         source,
         candidate_index: 0,
     };
+    state.connection_focus_node = None;
     state.selection = GraphSelection::Port(candidates[0]);
     set_status(state, StatusKind::Info, "Connect mode", effects);
 }
@@ -422,6 +548,7 @@ fn confirm_mode(
             let candidates = connection_targets(document, source);
             let Some(target) = candidates.get(candidate_index).copied() else {
                 state.mode = GraphEditorMode::Navigate;
+                state.selection = GraphSelection::Node(source.node_id);
                 set_status(
                     state,
                     StatusKind::Error,
@@ -430,13 +557,15 @@ fn confirm_mode(
                 );
                 return;
             };
+            record_undo(document, state);
             if let Some(edge_id) = document.add_edge(source, target) {
                 state.mode = GraphEditorMode::Navigate;
                 state.selection = GraphSelection::Edge(edge_id);
+                state.connection_focus_node = Some(source.node_id);
                 set_status(state, StatusKind::Info, "Created edge", effects);
             } else {
                 state.mode = GraphEditorMode::Navigate;
-                state.selection = GraphSelection::Port(source);
+                state.selection = GraphSelection::Node(source.node_id);
                 set_status(state, StatusKind::Error, "Failed to create edge", effects);
             }
         }
@@ -453,10 +582,11 @@ fn cancel_mode(state: &mut GraphEditorState, effects: &mut Vec<EditorEffect>) {
         }
         GraphEditorMode::ConnectEdge { source, .. } => {
             state.mode = GraphEditorMode::Navigate;
-            state.selection = GraphSelection::Port(source);
+            state.selection = GraphSelection::Node(source.node_id);
             set_status(state, StatusKind::Info, "Connect cancelled", effects);
         }
     }
+    state.connection_focus_node = None;
 }
 
 fn delete_selection(
@@ -467,15 +597,32 @@ fn delete_selection(
     match state.selection {
         GraphSelection::Node(node_id) => {
             if document.remove_node(node_id) {
-                state.selection = GraphSelection::None;
+                state.selection = document
+                    .nodes
+                    .first()
+                    .map(|node| GraphSelection::Node(node.id))
+                    .unwrap_or(GraphSelection::None);
                 state.mode = GraphEditorMode::Navigate;
+                state.connection_focus_node = None;
                 set_status(state, StatusKind::Info, "Deleted node", effects);
             }
         }
         GraphSelection::Edge(edge_id) => {
+            let focus_node = state.connection_focus_node;
             if document.remove_edge(edge_id) {
-                state.selection = GraphSelection::None;
                 state.mode = GraphEditorMode::Navigate;
+                if let Some(node_id) = focus_node {
+                    let remaining = connected_edges(document, node_id);
+                    if let Some(next_edge) = remaining.first().copied() {
+                        state.selection = GraphSelection::Edge(next_edge);
+                        state.connection_focus_node = Some(node_id);
+                    } else {
+                        state.selection = GraphSelection::Node(node_id);
+                        state.connection_focus_node = None;
+                    }
+                } else {
+                    state.selection = GraphSelection::None;
+                }
                 set_status(state, StatusKind::Info, "Deleted edge", effects);
             }
         }
@@ -488,6 +635,51 @@ fn delete_selection(
             );
         }
     }
+}
+
+fn cycle_selected_connection(
+    document: &GraphDocument,
+    state: &mut GraphEditorState,
+    node_id: NodeId,
+    direction: FocusDirection,
+) {
+    let edges = connected_edges(document, node_id);
+    if edges.is_empty() {
+        state.connection_focus_node = None;
+        state.selection = GraphSelection::Node(node_id);
+        return;
+    }
+
+    let current = match state.selection {
+        GraphSelection::Edge(edge_id) => edge_id,
+        _ => edges[0],
+    };
+    let idx = edges
+        .iter()
+        .position(|edge_id| *edge_id == current)
+        .unwrap_or(0);
+    let next_idx = match direction {
+        FocusDirection::Previous | FocusDirection::Left | FocusDirection::Up => {
+            idx.checked_sub(1).unwrap_or(edges.len() - 1)
+        }
+        _ => (idx + 1) % edges.len(),
+    };
+    state.selection = GraphSelection::Edge(edges[next_idx]);
+    state.status = StatusMessage {
+        kind: StatusKind::Info,
+        message: format!("Selected {}", describe_selection(document, state.selection)),
+    };
+}
+
+fn connected_edges(document: &GraphDocument, node_id: NodeId) -> Vec<EdgeId> {
+    let mut edges: Vec<_> = document
+        .edges
+        .iter()
+        .filter(|edge| edge.from.node_id == node_id || edge.to.node_id == node_id)
+        .map(|edge| edge.id)
+        .collect();
+    edges.sort();
+    edges
 }
 
 fn set_status(
@@ -516,7 +708,7 @@ fn selected_output_port(document: &GraphDocument, selection: GraphSelection) -> 
     match selection {
         GraphSelection::Port(port) if port.direction == PortDirection::Output => Some(port),
         GraphSelection::Node(node_id) => document.output_port_ref_at(node_id, 0),
-        _ => None,
+        GraphSelection::Edge(_) | GraphSelection::Port(_) | GraphSelection::None => None,
     }
 }
 
@@ -545,66 +737,22 @@ fn connection_targets(document: &GraphDocument, source: PortRef) -> Vec<PortRef>
 }
 
 #[derive(Clone, Copy)]
-struct SelectableItem {
-    selection: GraphSelection,
+struct SelectableNode {
+    node_id: NodeId,
     point: Point,
 }
 
-fn selectable_items(layout: &CanvasLayout) -> Vec<SelectableItem> {
-    let mut items = Vec::new();
-    for node in &layout.nodes {
-        items.push(SelectableItem {
-            selection: GraphSelection::Node(node.node_id),
-            point: node.rect.center(),
-        });
-        for port in &node.inputs {
-            items.push(SelectableItem {
-                selection: GraphSelection::Port(PortRef {
-                    node_id: node.node_id,
-                    port_id: port.port_id,
-                    direction: PortDirection::Input,
-                }),
-                point: port.anchor,
-            });
-        }
-        for port in &node.outputs {
-            items.push(SelectableItem {
-                selection: GraphSelection::Port(PortRef {
-                    node_id: node.node_id,
-                    port_id: port.port_id,
-                    direction: PortDirection::Output,
-                }),
-                point: port.anchor,
-            });
-        }
-    }
-    for edge in &layout.edges {
-        let point = edge.points[edge.points.len() / 2];
-        items.push(SelectableItem {
-            selection: GraphSelection::Edge(edge.edge_id),
-            point,
-        });
-    }
-    items
-}
-
-fn directional_selection(
-    current: GraphSelection,
+fn directional_node_selection(
+    current: SelectableNode,
     direction: FocusDirection,
-    selectables: &[SelectableItem],
-) -> Option<GraphSelection> {
-    let current_point = selectables
+    nodes: &[SelectableNode],
+) -> Option<NodeId> {
+    nodes
         .iter()
-        .find(|item| item.selection == current)
-        .map(|item| item.point)
-        .unwrap_or_else(|| selectables[0].point);
-
-    selectables
-        .iter()
-        .filter(|item| item.selection != current)
+        .filter(|item| item.node_id != current.node_id)
         .filter_map(|item| {
-            let dx = item.point.x - current_point.x;
-            let dy = item.point.y - current_point.y;
+            let dx = item.point.x - current.point.x;
+            let dy = item.point.y - current.point.y;
             let in_direction = match direction {
                 FocusDirection::Left => dx < 0,
                 FocusDirection::Right => dx > 0,
@@ -625,7 +773,7 @@ fn directional_selection(
                 FocusDirection::Up | FocusDirection::Down => dx.abs(),
                 FocusDirection::Next | FocusDirection::Previous => 0,
             };
-            Some(((primary, secondary), item.selection))
+            Some(((primary, secondary), item.node_id))
         })
         .min_by_key(|entry| entry.0)
         .map(|entry| entry.1)
@@ -688,6 +836,29 @@ mod tests {
     }
 
     #[test]
+    fn tab_switches_from_node_to_connected_edge_and_back() {
+        let mut document = GraphDocument::sample();
+        let mut state = GraphEditorState::new();
+        let node_id = document.nodes[0].id;
+        state.selection = GraphSelection::Node(node_id);
+        let _ = apply_action(
+            &mut document,
+            &mut state,
+            EditorAction::ToggleConnectionSelection,
+        );
+        assert!(matches!(state.selection, GraphSelection::Edge(_)));
+        assert_eq!(state.connection_focus_node, Some(node_id));
+
+        let _ = apply_action(
+            &mut document,
+            &mut state,
+            EditorAction::ToggleConnectionSelection,
+        );
+        assert_eq!(state.selection, GraphSelection::Node(node_id));
+        assert_eq!(state.connection_focus_node, None);
+    }
+
+    #[test]
     fn rename_node_updates_document() {
         let mut document = GraphDocument::sample();
         let mut state = GraphEditorState::new();
@@ -719,20 +890,40 @@ mod tests {
     }
 
     #[test]
-    fn connect_mode_creates_edge() {
+    fn delete_selected_edge_keeps_connection_navigation_alive() {
+        let mut document = GraphDocument::sample();
+        let mut state = GraphEditorState::new();
+        let node_id = document.nodes[1].id;
+        state.selection = GraphSelection::Node(node_id);
+        let _ = apply_action(
+            &mut document,
+            &mut state,
+            EditorAction::ToggleConnectionSelection,
+        );
+        let before = document.edges.len();
+        let _ = apply_action(&mut document, &mut state, EditorAction::DeleteSelection);
+        assert_eq!(document.edges.len(), before - 1);
+        assert!(matches!(
+            state.selection,
+            GraphSelection::Edge(_) | GraphSelection::Node(_)
+        ));
+    }
+
+    #[test]
+    fn undo_restores_last_mutation() {
         let mut document = GraphDocument::sample();
         let mut state = GraphEditorState::new();
         let node_id = document.nodes[0].id;
         state.selection = GraphSelection::Node(node_id);
-        let existing_edges = document.edges.len();
-        let _ = apply_action(&mut document, &mut state, EditorAction::BeginConnect);
+        let original = document.node(node_id).unwrap().position;
+        let _ = apply_action(&mut document, &mut state, EditorAction::BeginMoveNode);
         let _ = apply_action(
             &mut document,
             &mut state,
-            EditorAction::CycleConnectionTarget(FocusDirection::Next),
+            EditorAction::MoveSelectedNode { dx: 5, dy: 0 },
         );
-        let _ = apply_action(&mut document, &mut state, EditorAction::ConfirmMode);
-        assert!(document.edges.len() >= existing_edges);
+        let _ = apply_action(&mut document, &mut state, EditorAction::Undo);
+        assert_eq!(document.node(node_id).unwrap().position, original);
     }
 
     #[test]

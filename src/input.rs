@@ -56,12 +56,12 @@ fn map_navigate_mode(key: KeyEvent) -> Vec<EditorAction> {
         KeyCode::Down | KeyCode::Char('j') => {
             vec![EditorAction::MoveSelection(FocusDirection::Down)]
         }
-        KeyCode::Tab => vec![EditorAction::MoveSelection(FocusDirection::Next)],
-        KeyCode::BackTab => vec![EditorAction::MoveSelection(FocusDirection::Previous)],
+        KeyCode::Tab | KeyCode::BackTab => vec![EditorAction::ToggleConnectionSelection],
         KeyCode::Char('n') => vec![EditorAction::RequestCreateNode],
         KeyCode::Char('r') => vec![EditorAction::RequestRenameNode],
         KeyCode::Char('m') => vec![EditorAction::BeginMoveNode],
         KeyCode::Char('c') => vec![EditorAction::BeginConnect],
+        KeyCode::Char('u') => vec![EditorAction::Undo],
         KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => {
             vec![EditorAction::DeleteSelection]
         }
