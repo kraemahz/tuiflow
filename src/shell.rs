@@ -94,7 +94,7 @@ impl EditorShell {
             match effect {
                 EditorEffect::RequestPrompt(request) => {
                     let input = match &request {
-                        PromptRequest::CreateNode { suggested_title } => suggested_title.clone(),
+                        PromptRequest::CreateNode { .. } => String::new(),
                         PromptRequest::RenameNode { current_title, .. } => current_title.clone(),
                     };
                     self.prompt = Some(PromptState { request, input });

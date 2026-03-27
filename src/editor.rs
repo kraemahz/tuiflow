@@ -490,10 +490,10 @@ fn begin_connect(
             StatusKind::Error,
             "Select a node with outputs",
             effects,
-        );
+            );
         return;
     };
-    let candidates = connection_targets(document, source);
+    let candidates = sorted_connection_targets(document, source);
     if candidates.is_empty() {
         set_status(
             state,
@@ -525,7 +525,7 @@ fn cycle_connection_target(
     else {
         return;
     };
-    let candidates = connection_targets(document, source);
+    let candidates = sorted_connection_targets(document, source);
     if candidates.is_empty() {
         set_status(
             state,
@@ -571,7 +571,7 @@ fn confirm_mode(
             source,
             candidate_index,
         } => {
-            let candidates = connection_targets(document, source);
+            let candidates = sorted_connection_targets(document, source);
             let Some(target) = candidates.get(candidate_index).copied() else {
                 state.mode = GraphEditorMode::Navigate;
                 state.selection = GraphSelection::Node(source.node_id);
@@ -733,12 +733,12 @@ fn selected_node_id(selection: GraphSelection) -> Option<NodeId> {
 fn selected_output_port(document: &GraphDocument, selection: GraphSelection) -> Option<PortRef> {
     match selection {
         GraphSelection::Port(port) if port.direction == PortDirection::Output => Some(port),
-        GraphSelection::Node(node_id) => document.output_port_ref_at(node_id, 0),
+        GraphSelection::Node(node_id) => best_output_port_for_node(document, node_id),
         GraphSelection::Edge(_) | GraphSelection::Port(_) | GraphSelection::None => None,
     }
 }
 
-fn connection_targets(document: &GraphDocument, source: PortRef) -> Vec<PortRef> {
+pub(crate) fn sorted_connection_targets(document: &GraphDocument, source: PortRef) -> Vec<PortRef> {
     let mut targets = Vec::new();
     for node in &document.nodes {
         if node.id == source.node_id {
@@ -759,7 +759,54 @@ fn connection_targets(document: &GraphDocument, source: PortRef) -> Vec<PortRef>
             }
         }
     }
+    let layout = CanvasLayout::for_document(document);
+    let source_anchor = layout.port_anchor(source);
+    targets.sort_by_key(|target| {
+        let distance = match (source_anchor, layout.port_anchor(*target)) {
+            (Some(source_anchor), Some(target_anchor)) => {
+                manhattan_distance(source_anchor, target_anchor)
+            }
+            _ => i32::MAX,
+        };
+        (distance, target.node_id.0, target.port_id.0)
+    });
     targets
+}
+
+fn best_output_port_for_node(document: &GraphDocument, node_id: NodeId) -> Option<PortRef> {
+    let node = document.node(node_id)?;
+    if node.outputs.is_empty() {
+        return None;
+    }
+    let layout = CanvasLayout::for_document(document);
+    let mut best: Option<(i32, PortRef)> = None;
+    for port in &node.outputs {
+        let source = PortRef {
+            node_id,
+            port_id: port.id,
+            direction: PortDirection::Output,
+        };
+        let score = sorted_connection_targets(document, source)
+            .into_iter()
+            .filter_map(|target| {
+                Some(manhattan_distance(
+                    layout.port_anchor(source)?,
+                    layout.port_anchor(target)?,
+                ))
+            })
+            .min()
+            .unwrap_or(i32::MAX);
+        match best {
+            Some((best_score, best_port))
+                if score > best_score || (score == best_score && source.port_id.0 >= best_port.port_id.0) => {}
+            _ => best = Some((score, source)),
+        }
+    }
+    best.map(|(_, source)| source)
+}
+
+fn manhattan_distance(a: Point, b: Point) -> i32 {
+    (a.x - b.x).abs() + (a.y - b.y).abs()
 }
 
 #[derive(Clone, Copy)]
@@ -859,6 +906,29 @@ mod tests {
         );
         assert_eq!(document.nodes.len(), 1);
         assert!(matches!(state.selection, GraphSelection::Node(_)));
+    }
+
+    #[test]
+    fn connect_defaults_to_nearest_target_for_selected_source() {
+        let mut document = GraphDocument::sample();
+        let mut state = GraphEditorState::new();
+        state.selection = GraphSelection::Port(
+            document
+                .output_port_ref_at(document.nodes[0].id, 1)
+                .unwrap(),
+        );
+        let source = selected_output_port(&document, state.selection).unwrap();
+        let expected = sorted_connection_targets(&document, source).first().copied();
+        let _ = apply_action(&mut document, &mut state, EditorAction::BeginConnect);
+        assert_eq!(expected.map(GraphSelection::Port), Some(state.selection));
+    }
+
+    #[test]
+    fn connect_from_node_picks_spatially_best_output() {
+        let document = GraphDocument::sample();
+        let node_id = document.nodes[0].id;
+        let source = best_output_port_for_node(&document, node_id).unwrap();
+        assert_eq!(source, document.output_port_ref_at(node_id, 1).unwrap());
     }
 
     #[test]

@@ -8,7 +8,7 @@ use ratatui::{
 use crate::{
     GraphDocument,
     document::{Point, PortDirection, PortRef},
-    editor::{GraphEditorMode, GraphEditorState, Selection},
+    editor::{GraphEditorMode, GraphEditorState, Selection, sorted_connection_targets},
     layout::{CanvasLayout, WorldRect, width_of},
     theme::GraphTheme,
 };
@@ -126,27 +126,7 @@ impl Widget for GraphCanvas<'_> {
 }
 
 fn preview_targets(document: &GraphDocument, source: PortRef) -> Vec<PortRef> {
-    let mut targets = Vec::new();
-    for node in &document.nodes {
-        if node.id == source.node_id {
-            continue;
-        }
-        for port in &node.inputs {
-            let port_ref = PortRef {
-                node_id: node.id,
-                port_id: port.id,
-                direction: PortDirection::Input,
-            };
-            let exists = document
-                .edges
-                .iter()
-                .any(|edge| edge.from == source && edge.to == port_ref);
-            if !exists {
-                targets.push(port_ref);
-            }
-        }
-    }
-    targets
+    sorted_connection_targets(document, source)
 }
 
 fn draw_ports(
