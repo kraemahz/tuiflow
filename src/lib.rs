@@ -14,7 +14,10 @@ pub use editor::{
     EditorAction, EditorEffect, FocusDirection, GraphEditorMode, GraphEditorState, MouseState,
     PromptRequest, Selection, StatusKind, StatusMessage, apply_action,
 };
-pub use input::ActionMapper;
+pub use input::{
+    ActionMapper, ConnectBindings, InputMap, KeyBinding, MapResult, MoveNodeBindings,
+    NavigateBindings, ViewportBindings,
+};
 pub use render::GraphCanvas;
-pub use shell::EditorShell;
+pub use shell::{EditorShell, ShellEventResult};
 pub use theme::GraphTheme;

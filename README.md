@@ -5,7 +5,7 @@
 It gives you three layers to build with:
 
 - `GraphDocument<N, E>` for the graph model and typed node/edge payloads
-- `GraphEditorState`, `EditorAction`, `apply_action`, and `ActionMapper` for custom host integrations
+- `GraphEditorState`, `EditorAction`, `apply_action`, and configurable `ActionMapper` bindings for custom host integrations
 - `GraphCanvas` for rendering a graph/editor state into any `ratatui` layout
 - `EditorShell` for a ready-to-embed keyboard-first editing shell
 
@@ -16,6 +16,7 @@ The best current reference is [`examples/showcase.rs`](./examples/showcase.rs).
 - Typed graph document with explicit `NodeId`, `PortId`, `EdgeId`, and `PortRef`
 - Generic node and edge payloads, so host applications can attach their own metadata
 - `serde` support on document types for persistence and round-tripping
+- Configurable semantic input bindings through `InputMap`, `ActionMapper::with_bindings`, and `MapResult`
 - Keyboard-first editor flow for:
   - directional node selection
   - connection browsing
@@ -44,6 +45,8 @@ The showcase demonstrates:
 - rendering your own sidebar and status line around the graph canvas
 - handling `EditorEffect::OpenNodeEditor` and `EditorEffect::OpenEdgeEditor`
 - mutating typed payload data in response to editor actions
+
+If you need the shell in a larger application, use `EditorShell::with_mapper(...)` or `handle_event_result(...)` so outer modes can see whether the editor consumed the event.
 
 ## Example
 
@@ -113,7 +116,11 @@ impl App {
 If you want more control, build directly from the lower-level pieces:
 
 ```rust
-use tuiflow::{GraphCanvas, GraphDocument, GraphEditorState, GraphTheme};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use tuiflow::{
+    ActionMapper, GraphCanvas, GraphDocument, GraphEditorState, GraphTheme, InputMap, KeyBinding,
+    NavigateBindings,
+};
 
 let document = GraphDocument::<(), ()>::sample();
 let state = GraphEditorState::new();
@@ -121,6 +128,17 @@ let theme = GraphTheme::default();
 
 let canvas = GraphCanvas::new(&document, &state, &theme);
 // frame.render_widget(canvas, area);
+
+let mapper = ActionMapper::with_bindings(InputMap {
+    navigate: NavigateBindings {
+        create_node: vec![KeyBinding::plain(KeyCode::Char('a'))],
+        ..NavigateBindings::default()
+    },
+    ..InputMap::default()
+});
+
+let result = mapper.map_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE), &state);
+assert!(result.consumed);
 ```
 
 ## Keyboard Controls
@@ -139,6 +157,8 @@ The default input mapper supports the following controls:
 - `g`: center the viewport around the current focus
 - `Shift` + arrow keys: pan the viewport
 - In move/connect modes, `Enter` confirms and `Esc` cancels
+
+These defaults live in `InputMap::default()`. Host apps can replace only the bindings they care about and leave the editor semantics unchanged.
 
 ## Data Model
 

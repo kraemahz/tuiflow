@@ -23,6 +23,11 @@ struct PromptState {
     input: String,
 }
 
+pub struct ShellEventResult<N, E> {
+    pub consumed: bool,
+    pub effects: Vec<EditorEffect<N, E>>,
+}
+
 pub struct EditorShell<N, E> {
     document: GraphDocument<N, E>,
     state: GraphEditorState<N, E>,
@@ -37,6 +42,10 @@ where
     E: Clone + Default,
 {
     pub fn new(document: GraphDocument<N, E>) -> Self {
+        Self::with_mapper(document, ActionMapper::new())
+    }
+
+    pub fn with_mapper(document: GraphDocument<N, E>, mapper: ActionMapper) -> Self {
         let mut state = GraphEditorState::new();
         if let Some(node) = document.nodes.first() {
             state.selection = crate::editor::Selection::Node(node.id);
@@ -44,7 +53,7 @@ where
         Self {
             document,
             state,
-            mapper: ActionMapper::new(),
+            mapper,
             theme: GraphTheme::default(),
             prompt: None,
         }
@@ -62,6 +71,14 @@ where
         &self.state
     }
 
+    pub fn mapper(&self) -> &ActionMapper {
+        &self.mapper
+    }
+
+    pub fn mapper_mut(&mut self) -> &mut ActionMapper {
+        &mut self.mapper
+    }
+
     pub fn theme(&self) -> &GraphTheme {
         &self.theme
     }
@@ -71,16 +88,23 @@ where
     }
 
     pub fn handle_event(&mut self, event: &Event) -> Vec<EditorEffect<N, E>> {
+        self.handle_event_result(event).effects
+    }
+
+    pub fn handle_event_result(&mut self, event: &Event) -> ShellEventResult<N, E> {
         if self.prompt.is_some() {
             return self.handle_prompt_event(event);
         }
 
-        let actions = self.mapper.map_event(event, &self.state);
+        let mapped = self.mapper.map_event(event, &self.state);
         let mut external_effects = Vec::new();
-        for action in actions {
+        for action in mapped.actions {
             external_effects.extend(self.dispatch(action));
         }
-        external_effects
+        ShellEventResult {
+            consumed: mapped.consumed,
+            effects: external_effects,
+        }
     }
 
     pub fn dispatch(&mut self, action: EditorAction) -> Vec<EditorEffect<N, E>> {
@@ -116,22 +140,34 @@ where
         external
     }
 
-    fn handle_prompt_event(&mut self, event: &Event) -> Vec<EditorEffect<N, E>> {
+    fn handle_prompt_event(&mut self, event: &Event) -> ShellEventResult<N, E> {
         let Event::Key(KeyEvent { code, .. }) = event else {
-            return Vec::new();
+            return ShellEventResult {
+                consumed: false,
+                effects: Vec::new(),
+            };
         };
         let Some(prompt) = &mut self.prompt else {
-            return Vec::new();
+            return ShellEventResult {
+                consumed: false,
+                effects: Vec::new(),
+            };
         };
 
         match code {
             KeyCode::Char(ch) => {
                 prompt.input.push(*ch);
-                Vec::new()
+                ShellEventResult {
+                    consumed: true,
+                    effects: Vec::new(),
+                }
             }
             KeyCode::Backspace => {
                 prompt.input.pop();
-                Vec::new()
+                ShellEventResult {
+                    consumed: true,
+                    effects: Vec::new(),
+                }
             }
             KeyCode::Esc => {
                 self.prompt = None;
@@ -139,22 +175,32 @@ where
                     kind: StatusKind::Info,
                     message: "Prompt cancelled".to_owned(),
                 };
-                Vec::new()
+                ShellEventResult {
+                    consumed: true,
+                    effects: Vec::new(),
+                }
             }
             KeyCode::Enter => {
                 let request = prompt.request.clone();
                 let value = prompt.input.clone();
                 self.prompt = None;
-                match request {
+                let effects = match request {
                     PromptRequest::CreateNode { .. } => {
                         self.dispatch(EditorAction::SubmitCreateNodeTitle(value))
                     }
                     PromptRequest::RenameNode { .. } => {
                         self.dispatch(EditorAction::SubmitRenameNodeTitle(value))
                     }
+                };
+                ShellEventResult {
+                    consumed: true,
+                    effects,
                 }
             }
-            _ => Vec::new(),
+            _ => ShellEventResult {
+                consumed: false,
+                effects: Vec::new(),
+            },
         }
     }
 }
@@ -198,7 +244,13 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use crate::{EditorAction, editor::EditorEffect};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use crate::{
+        EditorAction,
+        editor::EditorEffect,
+        input::{InputMap, KeyBinding, NavigateBindings},
+    };
 
     use super::*;
 
@@ -230,5 +282,35 @@ mod tests {
                 .iter()
                 .any(|effect| matches!(effect, EditorEffect::OpenNodeEditor { .. }))
         );
+    }
+
+    #[test]
+    fn shell_reports_consumed_for_default_mapped_keys() {
+        let mut shell = EditorShell::<NodeData, EdgeData>::new(GraphDocument::sample());
+        let result = shell.handle_event_result(&Event::Key(KeyEvent::new(
+            KeyCode::Char('n'),
+            KeyModifiers::NONE,
+        )));
+        assert!(result.consumed);
+    }
+
+    #[test]
+    fn shell_supports_custom_mappers() {
+        let mapper = ActionMapper::with_bindings(InputMap {
+            navigate: NavigateBindings {
+                create_node: vec![KeyBinding::plain(KeyCode::Char('a'))],
+                ..NavigateBindings::default()
+            },
+            ..InputMap::default()
+        });
+        let mut shell =
+            EditorShell::<NodeData, EdgeData>::with_mapper(GraphDocument::new(), mapper);
+
+        let custom = shell.handle_event_result(&Event::Key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+        )));
+        assert!(custom.consumed);
+        assert!(shell.prompt_active());
     }
 }
