@@ -11,6 +11,8 @@ It gives you three layers to build with:
 
 The best current reference is [`examples/showcase.rs`](./examples/showcase.rs).
 
+![Showcase Gif](https://github.com/kraemahz/tuiflow/blob/main/assets/tuiflow.gif "Showcase Gif")
+
 ## Features
 
 - Typed graph document with explicit `NodeId`, `PortId`, `EdgeId`, and `PortRef`
